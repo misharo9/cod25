@@ -69,9 +69,11 @@ module sram_controller #(
           ram_we_n_reg <= 1'b1;
           sram_data_o_reg <= 32'b0;
           sram_data_t_reg <= 1'b1;
+          wb_ack_o <= 1'b0;
       end else begin
           case (state)
               STATE_IDLE: begin
+                  wb_ack_o <= 1'b0;
                   if (wb_stb_i && wb_cyc_i) begin
                       if (wb_we_i) begin
                           state <= STATE_WRITE;

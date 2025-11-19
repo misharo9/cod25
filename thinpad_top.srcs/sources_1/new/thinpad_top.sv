@@ -460,8 +460,9 @@ module thinpad_top (
   // assign video_de     = 1'b0;
   
   // // LED和数码管
-  // assign leds = 16'b0;
-  // assign dpy0 = 8'b0;
-  // assign dpy1 = 8'b0;
+  assign leds = dip_sw[15:0];
+  // 至少先给 dpy 一个固定值，防止它们也被优化
+  assign dpy0 = 8'hFF; // 全灭
+  assign dpy1 = 8'hFF; // 全灭
 
 endmodule

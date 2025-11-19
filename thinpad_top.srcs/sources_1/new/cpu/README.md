@@ -146,6 +146,56 @@ CPU核心
   - IF等待时停顿前端流水线
   - MEM等待时停顿整个流水线
 
+### 4. 流水线控制实现细节（当前版本）
+
+为了在引入 Wishbone 总线延迟后仍然保持流水线行为正确，本项目在 `cpu_core.sv` 中采用了保守的气泡与冲刷策略，由 `hazard_detection.sv` 统一生成以下控制信号：
+
+- **pc_stall**：PC 更新停顿  
+  - 为 1 时，PC 保持当前值，不再前进到下一条指令地址。  
+  - 典型场景：Load-Use 冒险、IF/MEM 等待 Wishbone 应答时。
+
+- **if_id_stall**：IF/ID 流水线寄存器停顿  
+  - 为 1 时，IF/ID 寄存器保持不变，不写入新的指令与 PC。  
+  - 通常与 `pc_stall` 一起拉高，用于“冻结”前端流水线。
+
+- **if_id_flush**：IF/ID 流水线寄存器冲刷  
+  - 为 1 时，IF/ID 寄存器被写入 NOP（`addi x0, x0, 0`），相当于在 IF/ID 插入气泡。  
+  - 在分支/跳转成功时使用，用来丢弃已经取错的指令。
+
+- **id_ex_flush**：ID/EX 流水线寄存器冲刷  
+  - 为 1 时，ID/EX 寄存器所有控制信号与操作数被清零，相当于在 ID/EX 插入一个 NOP 气泡。  
+  - 在 Load-Use 冒险、分支/跳转成功时使用。
+
+具体行为按照以下优先级执行（高优先级在上）：
+
+1. **MEM 结构冒险（`mem_master_wait`）**  
+   - 数据访存阶段正在等待 Wishbone 应答时：  
+     - `pc_stall = 1`，`if_id_stall = 1`  
+     - 后端流水线寄存器（ID/EX、EX/MEM、MEM/WB）在 `cpu_core.sv` 中通过 `mem_wait` 自动保持不变  
+   - 效果：整个流水线“冻结”，直到访存完成。
+
+2. **IF 结构冒险（`if_master_wait`）**  
+   - 取指阶段正在等待 Wishbone 应答时：  
+     - `pc_stall = 1`，`if_id_stall = 1`  
+   - 在这个阶段 **不会** 执行分支/跳转冲刷或 Load-Use 插泡，避免在 Wishbone 事务未完成时修改 PC 或取消取指。  
+   - 分支决议会被“延迟”到 IF 不再等待的周期再处理。
+
+3. **控制冒险（分支 / 跳转）**  
+   - 当 EX 阶段判断分支/跳转成功，且总线当前不忙时：  
+     - `if_id_flush = 1`，`id_ex_flush = 1`  
+   - IF/ID 与 ID/EX 两级被同时冲刷为 NOP，由 PC 在下一周期跳转到目标地址。  
+   - 对应文档中“分支成功/跳转时冲刷 IF/ID 和 ID/EX”的行为。
+
+4. **Load-Use 数据冒险**  
+   - 条件：ID/EX 阶段指令为 Load，且其 `rd` 与 IF/ID 阶段的 `rs1` 或 `rs2` 相同（且不为 x0）。  
+   - 处理方式：  
+     - `pc_stall = 1`，`if_id_stall = 1`，`id_ex_flush = 1`  
+   - 效果：前端（PC 和 IF/ID）停顿一个周期，在 ID/EX 插入一个气泡，确保写回结果已经可用或可通过前递获取。
+
+当某个周期既存在 Load-Use 冒险又存在分支/跳转成功时，以 **控制冒险优先**：  
+- 即：优先冲刷 IF/ID 和 ID/EX，不再额外插入 Load-Use 气泡。  
+- 与 `flush&bubble.md` 中“同时发生时按照分支/跳转来处理”的提示一致。
+
 ## 支持的指令
 
 ### 算术运算

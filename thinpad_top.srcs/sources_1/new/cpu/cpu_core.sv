@@ -72,9 +72,6 @@ module cpu_core #(
   reg        ex_mem_mem_write;
   reg [1:0]  ex_mem_result_src;
   
-  // 用于检测访存操作刚完成的标志
-  reg        mem_wait_prev;
-  
   // MEM/WB Pipeline Register
   reg [31:0] mem_wb_alu_result;
   reg [31:0] mem_wb_mem_data;
@@ -211,8 +208,10 @@ module cpu_core #(
     .id_ex_rs2(id_ex_rs2),
     .ex_mem_rd(ex_mem_rd),
     .ex_mem_reg_write(ex_mem_reg_write),
-    .mem_wb_rd(wb_rd_addr),
-    .mem_wb_reg_write(wb_reg_write),
+    // MEM/WB 阶段的前递直接使用流水线寄存器中的信息，
+    // 避免被写回路径上的额外条件（如 mem_wait）屏蔽，从而导致使用旧值。
+    .mem_wb_rd(mem_wb_rd),
+    .mem_wb_reg_write(mem_wb_reg_write),
     .forward_a(forward_a),
     .forward_b(forward_b)
   );
@@ -267,24 +266,6 @@ module cpu_core #(
   assign ex_branch_target = id_ex_pc + id_ex_immediate;
   assign ex_jump_target = id_ex_jalr ? (ex_alu_result & ~32'b1) : ex_branch_target;
   assign ex_pc_src = (ex_branch_taken || id_ex_jump || id_ex_jalr);
-  
-  // Debug signals - 可以在波形中查看这些信号
-  wire [31:0] debug_ex_branch_target = ex_branch_target;
-  wire [31:0] debug_id_ex_pc = id_ex_pc;
-  wire [31:0] debug_id_ex_immediate = id_ex_immediate;
-  wire        debug_ex_branch_taken = ex_branch_taken;
-  wire        debug_if_wait = if_wait;
-  wire        debug_mem_wait = mem_wait;
-  wire        debug_pc_stall = pc_stall;
-  wire        debug_if_id_stall = if_id_stall;
-  wire        debug_if_id_flush = if_id_flush;
-  wire        debug_id_ex_flush = id_ex_flush;
-  wire        debug_wb_reg_write = wb_reg_write;
-  wire [4:0]  debug_wb_rd_addr = wb_rd_addr;
-  wire [31:0] debug_wb_rd_data = wb_rd_data;
-  wire        debug_if_req = if_req;
-  
-  // =========== EX/MEM Pipeline Register ===========
   
   // =========== MEM Stage ===========
   wire [31:0] mem_read_data_raw;
@@ -371,9 +352,9 @@ module cpu_core #(
                       mem_wb_pc_plus_4;
   
   assign wb_rd_addr = mem_wb_rd;
-  // 只有在MEM阶段不等待且前一个周期也不等待时才允许写回
-  // 这样可以避免在访存完成的那个周期写回旧的MEM/WB数据
-  assign wb_reg_write = mem_wb_reg_write && !mem_wait && !mem_wait_prev;
+  // 写回使能直接来自 MEM/WB 寄存器
+  // 当流水线因为 mem_wait 停顿时，MEM/WB 也被冻结，多次写回相同值是安全的
+  assign wb_reg_write = mem_wb_reg_write;
   
   // =========== 冒险检测 ===========
   
@@ -398,9 +379,9 @@ module cpu_core #(
   always_ff @(posedge clk) begin
     if (rst) begin
       pc_reg <= 32'h8000_0000;  // 复位PC到BaseRAM起始地址
-    end else if (!pc_stall && !mem_wait && !mem_wait_prev) begin
-      // 只有在没有PC停顿且MEM阶段不在等待时才更新PC
-      // 访存刚完成的周期（mem_wait_prev为真）也需要停顿，让指令正确完成
+    end else if (!pc_stall) begin
+      // 只有在没有PC停顿时才更新PC
+      // pc_stall由hazard_detection单元控制，会在需要时停顿PC
       pc_reg <= pc_next;
     end
   end
@@ -457,9 +438,10 @@ module cpu_core #(
       id_ex_jump <= 1'b0;
       id_ex_jalr <= 1'b0;
       id_ex_lui <= 1'b0;
-    end else if (!mem_wait && !mem_wait_prev && !if_id_stall) begin
-      // ID/EX在MEM不等待（包括刚完成）且IF/ID不停顿时更新
+    end else if (!if_id_stall) begin
+      // ID/EX在IF/ID不停顿时更新
       // 如果IF/ID停顿，ID/EX也必须停顿，否则会重复执行IF/ID中的指令
+      // 注意：mem_wait会导致if_id_stall，因此不需要单独检查mem_wait
       id_ex_pc <= if_id_pc;
       id_ex_pc_plus_4 <= if_id_pc_plus_4;
       id_ex_rs1_data <= id_rs1_data;
@@ -484,15 +466,6 @@ module cpu_core #(
     // 否则：停顿（保持不变）
   end
   
-  // 记录前一周期的mem_wait状态
-  always_ff @(posedge clk) begin
-    if (rst) begin
-      mem_wait_prev <= 1'b0;
-    end else begin
-      mem_wait_prev <= mem_wait;
-    end
-  end
-  
   // EX/MEM
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -505,18 +478,8 @@ module cpu_core #(
       ex_mem_mem_read <= 1'b0;
       ex_mem_mem_write <= 1'b0;
       ex_mem_result_src <= 2'b0;
-    end else if (mem_wait) begin
-      // 当MEM阶段正在等待总线时，清除访存控制信号
-      // 这样当访存完成后，MEM Master不会重复发起请求
-      ex_mem_mem_read <= 1'b0;
-      ex_mem_mem_write <= 1'b0;
-      // 保留其他数据（alu_result, rd等），以便传递到MEM/WB
-    end else if (mem_wait_prev) begin
-      // 访存刚完成的周期，保持EX/MEM不变
-      // 让当前在EX/MEM中的指令数据能够正确传递到MEM/WB
-      // 不做任何更新，保持原值
-    end else if (!if_id_stall) begin
-      // 正常更新：从ID/EX传递新指令
+    end else if (!mem_wait && !if_id_stall) begin
+      // 正常更新：当MEM不等待且流水线不停顿时
       ex_mem_alu_result <= ex_alu_result;
       ex_mem_rs2_data <= ex_operand_b_forwarded;
       ex_mem_pc_plus_4 <= id_ex_pc_plus_4;
@@ -527,7 +490,7 @@ module cpu_core #(
       ex_mem_mem_write <= id_ex_mem_write;
       ex_mem_result_src <= id_ex_result_src;
     end
-    // 否则：IF/ID停顿时，EX/MEM也停顿（保持不变）
+    // 否则：mem_wait=1或停顿时保持不变
   end
   
   // MEM/WB
@@ -541,7 +504,7 @@ module cpu_core #(
       mem_wb_reg_write <= 1'b0;
       mem_wb_result_src <= 2'b0;
     end else if (!mem_wait && !if_id_stall) begin
-      // MEM/WB在MEM不等待且IF/ID不停顿时更新
+      // MEM/WB更新：在MEM不等待且IF/ID不停顿时更新
       // 当访存完成时（mem_wait变为假），立即更新以获取访存结果
       mem_wb_alu_result <= ex_mem_alu_result;
       mem_wb_mem_data <= mem_read_data_raw;
