@@ -19,6 +19,9 @@ module hazard_detection (
     // 停顿和冲刷控制信号
     output reg        pc_stall,         // PC停顿
     output reg        if_id_stall,      // IF/ID寄存器停顿
+    output reg        id_ex_stall,      // ID/EX寄存器停顿
+    output reg        ex_mem_stall,     // EX/MEM寄存器停顿
+    output reg        mem_wb_stall,     // MEM/WB寄存器停顿
     output reg        if_id_flush,      // IF/ID寄存器冲刷
     output reg        id_ex_flush       // ID/EX寄存器冲刷
 );
@@ -31,31 +34,32 @@ module hazard_detection (
 
   always_comb begin
     // 默认值：无停顿、无冲刷
-    pc_stall    = 1'b0;
-    if_id_stall = 1'b0;
-    if_id_flush = 1'b0;
-    id_ex_flush = 1'b0;
+    pc_stall     = 1'b0;
+    if_id_stall  = 1'b0;
+    id_ex_stall  = 1'b0;
+    ex_mem_stall = 1'b0;
+    mem_wb_stall = 1'b0;
+    if_id_flush  = 1'b0;
+    id_ex_flush  = 1'b0;
 
-    // 1. 结构冒险 - MEM阶段等待总线：停顿整个流水线（PC 和前端寄存器）
-    //    后端流水线在 cpu_core 中通过 mem_wait 单独停顿
-    if (mem_master_wait) begin
-      pc_stall    = 1'b1;
-      if_id_stall = 1'b1;
+    // 1. 结构冒险 - 总线忙（IF或MEM等待）：停顿整个流水线
+    //    参考样例代码：mem_busy时停顿所有阶段
+    if (if_master_wait || mem_master_wait) begin
+      pc_stall     = 1'b1;
+      if_id_stall  = 1'b1;
+      id_ex_stall  = 1'b1;
+      ex_mem_stall = 1'b1;
+      mem_wb_stall = 1'b1;
+      // 总线忙时不处理其他冒险
     end
-    // 2. 结构冒险 - IF阶段等待总线：停顿前端（PC 与 IF/ID），
-    //    不在总线忙时执行分支/跳转或load-use逻辑，避免在 Wishbone 事务未完成时修改PC
-    else if (if_master_wait) begin
-      pc_stall    = 1'b1;
-      if_id_stall = 1'b1;
-    end
-    // 3. 控制冒险 - 分支/跳转成功：
-    //    冲刷 IF/ID 和 ID/EX，PC 在下一周期更新为目标地址（前提是总线不忙）
+    // 2. 控制冒险 - 分支/跳转成功：
+    //    冲刷 IF/ID 和 ID/EX（清除错误路径上的指令）
     else if (branch_taken || jump_taken) begin
-      if_id_flush = 1'b1;
-      id_ex_flush = 1'b1;
+      if_id_flush = 1'b1;  // 冲刷IF/ID中可能已取回的错误指令
+      id_ex_flush = 1'b1;  // 冲刷ID/EX中的指令
     end
-    // 4. 数据冒险 - Load-Use：
-    //    停顿PC和IF/ID，在ID/EX插入气泡（与文档中“插入一个气泡”的行为一致）
+    // 3. 数据冒险 - Load-Use：
+    //    停顿PC和IF/ID，在ID/EX插入气泡
     else if (load_use_hazard) begin
       pc_stall    = 1'b1;
       if_id_stall = 1'b1;

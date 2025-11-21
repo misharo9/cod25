@@ -7,6 +7,7 @@ module forwarding_unit (
     // EX/MEM阶段的目标寄存器和控制信号
     input  wire [4:0] ex_mem_rd,
     input  wire       ex_mem_reg_write,
+    input  wire       ex_mem_mem_read,
     
     // MEM/WB阶段的目标寄存器和控制信号
     input  wire [4:0] mem_wb_rd,
@@ -28,22 +29,27 @@ module forwarding_unit (
     forward_b = FORWARD_NONE;
 
     // EX hazard (EX/MEM -> EX)
-    // 如果EX/MEM阶段要写寄存器，且目标寄存器不是x0，且与当前EX阶段的rs1匹配
-    if (ex_mem_reg_write && (ex_mem_rd != 5'b0) && (ex_mem_rd == id_ex_rs1)) begin
+    // 如果EX/MEM阶段要写寄存器，且目标寄存器不是x0，且与当前EX阶段的rs1匹配（且rs1不是x0）
+    // 且EX/MEM阶段不是Load指令（Load指令的数据在MEM阶段尚未准备好，需等待到WB阶段）
+    if (ex_mem_reg_write && (ex_mem_rd != 5'b0) && (id_ex_rs1 != 5'b0) && 
+        (ex_mem_rd == id_ex_rs1) && !ex_mem_mem_read) begin
       forward_a = FORWARD_EX_MEM;
     end
     // MEM hazard (MEM/WB -> EX)
-    // 如果MEM/WB阶段要写寄存器，且目标寄存器不是x0，且与当前EX阶段的rs1匹配
+    // 如果MEM/WB阶段要写寄存器，且目标寄存器不是x0，且与当前EX阶段的rs1匹配（且rs1不是x0）
     // 注意：EX hazard优先级更高，所以只有在没有EX hazard时才检查MEM hazard
-    else if (mem_wb_reg_write && (mem_wb_rd != 5'b0) && (mem_wb_rd == id_ex_rs1)) begin
+    else if (mem_wb_reg_write && (mem_wb_rd != 5'b0) && (id_ex_rs1 != 5'b0) && 
+             (mem_wb_rd == id_ex_rs1)) begin
       forward_a = FORWARD_MEM_WB;
     end
 
     // 同样的逻辑应用于rs2
-    if (ex_mem_reg_write && (ex_mem_rd != 5'b0) && (ex_mem_rd == id_ex_rs2)) begin
+    if (ex_mem_reg_write && (ex_mem_rd != 5'b0) && (id_ex_rs2 != 5'b0) && 
+        (ex_mem_rd == id_ex_rs2) && !ex_mem_mem_read) begin
       forward_b = FORWARD_EX_MEM;
     end
-    else if (mem_wb_reg_write && (mem_wb_rd != 5'b0) && (mem_wb_rd == id_ex_rs2)) begin
+    else if (mem_wb_reg_write && (mem_wb_rd != 5'b0) && (id_ex_rs2 != 5'b0) && 
+             (mem_wb_rd == id_ex_rs2)) begin
       forward_b = FORWARD_MEM_WB;
     end
   end

@@ -31,6 +31,9 @@ module cpu_core #(
   // Hazard Control Signals
   wire pc_stall;
   wire if_id_stall;
+  wire id_ex_stall;
+  wire ex_mem_stall;
+  wire mem_wb_stall;
   wire if_id_flush;
   wire id_ex_flush;
 
@@ -208,6 +211,7 @@ module cpu_core #(
     .id_ex_rs2(id_ex_rs2),
     .ex_mem_rd(ex_mem_rd),
     .ex_mem_reg_write(ex_mem_reg_write),
+    .ex_mem_mem_read(ex_mem_mem_read),
     // MEM/WB 阶段的前递直接使用流水线寄存器中的信息，
     // 避免被写回路径上的额外条件（如 mem_wait）屏蔽，从而导致使用旧值。
     .mem_wb_rd(mem_wb_rd),
@@ -369,6 +373,9 @@ module cpu_core #(
     .mem_master_wait(mem_wait),
     .pc_stall(pc_stall),
     .if_id_stall(if_id_stall),
+    .id_ex_stall(id_ex_stall),
+    .ex_mem_stall(ex_mem_stall),
+    .mem_wb_stall(mem_wb_stall),
     .if_id_flush(if_id_flush),
     .id_ex_flush(id_ex_flush)
   );
@@ -407,12 +414,13 @@ module cpu_core #(
       if_id_instruction <= 32'h0000_0013;  // NOP指令
     end else if (!if_id_stall && !if_wait) begin
       // 正常更新 - 使用if_pc_reg而不是pc_reg，确保PC值对应正在取的指令
-      // 注意：不需要检查mem_wait，因为如果mem_wait为真，if_id_stall也会为真
+      // if_wait检查确保只在取指完成时更新
+      // if_id_stall由hazard_detection统一管理停顿逻辑
       if_id_pc <= if_pc_reg;
       if_id_pc_plus_4 <= if_pc_reg + 4;
       if_id_instruction <= if_instruction;
     end
-    // 如果有stall/wait，IF/ID保持不变（隐式的else，什么都不做）
+    // 如果有stall或wait，IF/ID保持不变（隐式的else，什么都不做）
   end
   
   // ID/EX
@@ -438,10 +446,9 @@ module cpu_core #(
       id_ex_jump <= 1'b0;
       id_ex_jalr <= 1'b0;
       id_ex_lui <= 1'b0;
-    end else if (!if_id_stall) begin
-      // ID/EX在IF/ID不停顿时更新
-      // 如果IF/ID停顿，ID/EX也必须停顿，否则会重复执行IF/ID中的指令
-      // 注意：mem_wait会导致if_id_stall，因此不需要单独检查mem_wait
+    end else if (!id_ex_stall) begin
+      // ID/EX在不停顿时更新
+      // 使用统一的stall信号，由hazard_detection管理
       id_ex_pc <= if_id_pc;
       id_ex_pc_plus_4 <= if_id_pc_plus_4;
       id_ex_rs1_data <= id_rs1_data;
@@ -478,8 +485,9 @@ module cpu_core #(
       ex_mem_mem_read <= 1'b0;
       ex_mem_mem_write <= 1'b0;
       ex_mem_result_src <= 2'b0;
-    end else if (!mem_wait && !if_id_stall) begin
-      // 正常更新：当MEM不等待且流水线不停顿时
+    end else if (!ex_mem_stall) begin
+      // 正常更新：使用统一的stall信号
+      // ex_mem_stall由hazard_detection管理，总线忙时会停顿
       ex_mem_alu_result <= ex_alu_result;
       ex_mem_rs2_data <= ex_operand_b_forwarded;
       ex_mem_pc_plus_4 <= id_ex_pc_plus_4;
@@ -490,7 +498,7 @@ module cpu_core #(
       ex_mem_mem_write <= id_ex_mem_write;
       ex_mem_result_src <= id_ex_result_src;
     end
-    // 否则：mem_wait=1或停顿时保持不变
+    // 否则：停顿时保持不变
   end
   
   // MEM/WB
@@ -503,9 +511,10 @@ module cpu_core #(
       mem_wb_funct3 <= 3'b0;
       mem_wb_reg_write <= 1'b0;
       mem_wb_result_src <= 2'b0;
-    end else if (!mem_wait && !if_id_stall) begin
-      // MEM/WB更新：在MEM不等待且IF/ID不停顿时更新
-      // 当访存完成时（mem_wait变为假），立即更新以获取访存结果
+    end else if (!mem_wb_stall) begin
+      // MEM/WB更新：使用统一的stall信号
+      // 总线忙时会停顿，确保流水线同步
+      // 这样Load指令的数据可以在访存完成后及时传递到WB阶段进行前递
       mem_wb_alu_result <= ex_mem_alu_result;
       mem_wb_mem_data <= mem_read_data_raw;
       mem_wb_pc_plus_4 <= ex_mem_pc_plus_4;
@@ -517,4 +526,3 @@ module cpu_core #(
   end
 
 endmodule
-
