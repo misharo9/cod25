@@ -4,7 +4,7 @@ module hazard_detection (
   input  wire [4:0] if_id_rs1,
   input  wire [4:0] if_id_rs2,
     
-    // ID/EX阶段的load指令信息
+    // ID/EX阶段的load指令信息 
     input  wire [4:0] id_ex_rd,
     input  wire       id_ex_mem_read,
     

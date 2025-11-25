@@ -107,6 +107,7 @@ module cpu_core #(
     .flush(if_id_flush),  // 当IF/ID需要flush时，也取消IF Master的取指
     .instruction(if_instruction),
     .wait_flag(if_wait),
+    .if_stall(if_id_stall),  // IF阶段停顿时，IF Master不发起新请求
     .wb_adr_o(if_wb_adr_o),
     .wb_dat_i(if_wb_dat_i),
     .wb_dat_o(if_wb_dat_o),
@@ -309,7 +310,6 @@ module cpu_core #(
     .wb_cyc_o(mem_wb_cyc_o)
   );
   
-  // =========== MEM/WB Pipeline Register ===========
   
   // =========== WB Stage ===========
   logic [31:0] wb_mem_data_aligned;
@@ -397,12 +397,22 @@ module cpu_core #(
   always_ff @(posedge clk) begin
     if (rst) begin
       if_pc_reg <= 32'h8000_0000;
-    end else if (!if_wait) begin
+    end else if (!pc_stall) begin
       // 当IF Master不在等待时（IDLE或刚完成取指），更新为当前PC
       // 这样在IF Master发起新请求时，if_pc_reg对应该请求的地址
       if_pc_reg <= pc_reg;
     end
-    // 当IF Master在等待时（BUSY），if_pc_reg保持不变，锁存正在取指的地址
+  end
+
+  reg [31:0] if_instruction_reg, if_instruction_prev;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      if_instruction_reg <= 32'h0000_0013;
+      if_instruction_prev <= 32'h0000_0013;
+    end else if (!if_wait) begin
+      if_instruction_reg <= if_instruction;
+      if_instruction_prev <= if_instruction_reg;
+    end
   end
   
   // =========== 流水线寄存器更新 ===========
@@ -412,7 +422,7 @@ module cpu_core #(
       if_id_pc <= 32'b0;
       if_id_pc_plus_4 <= 32'b0;
       if_id_instruction <= 32'h0000_0013;  // NOP指令
-    end else if (!if_id_stall && !if_wait) begin
+    end else if (!if_id_stall) begin
       // 正常更新 - 使用if_pc_reg而不是pc_reg，确保PC值对应正在取的指令
       // if_wait检查确保只在取指完成时更新
       // if_id_stall由hazard_detection统一管理停顿逻辑

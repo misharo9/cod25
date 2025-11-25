@@ -13,6 +13,7 @@ module if_master #(
     input  wire                    flush,        // 冲刷信号（分支/跳转时取消当前取指）
     output reg  [DATA_WIDTH-1:0]   instruction,  // 返回的指令
     output wire                    wait_flag,    // 等待标志（总线未就绪）
+    input  wire                    if_stall,     // IF阶段停顿信号（停顿时不发起新请求）
     
     // Wishbone Master接口
     output reg  [ADDR_WIDTH-1:0]   wb_adr_o,
@@ -52,7 +53,8 @@ module if_master #(
     end else begin
       case (state)
         IDLE: begin
-          if (req) begin
+          // 只有在有请求且未停顿时才发起新的读请求
+          if (req && !if_stall) begin
             // 发起新的读请求
             wb_adr_o <= pc;
             wb_we_o  <= 1'b0;       // 读操作
@@ -61,6 +63,7 @@ module if_master #(
             wb_cyc_o <= 1'b1;
             state    <= BUSY;
           end
+          // if_stall为高时，保持IDLE状态，不发起新请求
         end
         
         BUSY: begin
